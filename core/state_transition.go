@@ -176,7 +176,7 @@ func TransactionToMessage(tx *types.Transaction, s types.Signer, baseFee *big.In
 // state and would never be accepted within a block.
 // 通过给定的msg计算新的state，这里抛出的error代表了core的错误，意味着在特定的state下，该消息一直会出错，并且不被区块接受
 func ApplyMessage(evm *vm.EVM, msg *Message, gp *GasPool) (*ExecutionResult, error) {
-	// 这里的NewStateTransition会返回一个StateTransition的地址
+	// 这里的NewStateTransition会返回一个StateTransition的指针，然后执行该对象的TransitionDb函数
 	return NewStateTransition(evm, msg, gp).TransitionDb()
 }
 
