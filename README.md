@@ -79,10 +79,9 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 // 在这里说明一下call、callcode、staticcall、delegatecall的区别
 // 要说明这个区别就要先看Contract的结构
 type Contract struct {
-  // 这个其实就是msg.sender获取的地址，delegate会额外操作这个变量
-	CallerAddress common.Address
-	caller        ContractRef
-	self          ContractRef
+	CallerAddress common.Address // msg.sender
+	caller        ContractRef  // 调用该合约的上一个调用者
+	self          ContractRef  // 改变谁的存储
 	...
 }
 // 这四个操作里边，只有call可以真正的发送eth，callcode虽然接受value，但是并不会真正发送
