@@ -105,6 +105,7 @@ func NewEVMInterpreter(evm *EVM) *EVMInterpreter {
 // ErrExecutionReverted which means revert-and-keep-gas-left.
 func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (ret []byte, err error) {
 	// Increment the call depth which is restricted to 1024
+	// 整个以太坊代码中只有这里做了evm.depth++的操作，然后限制了执行run的次数不能超过1024
 	in.evm.depth++
 	defer func() { in.evm.depth-- }()
 

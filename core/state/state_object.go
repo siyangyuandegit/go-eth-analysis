@@ -62,21 +62,33 @@ func (s Storage) Copy() Storage {
 // First you need to obtain a state object.
 // Account values can be accessed and modified through the object.
 // Finally, call commitTrie to write the modified storage trie into a database.
+
+// stateObject代表正在修改的以太坊账户，小写开头，所以不对外暴露
+// 首先获得该对象，然后可以通过该对象修改账户的值，最后通过commitTrie把storage trie存入数据库
 type stateObject struct {
-	address  common.Address
+	// 20字节长度的字节数组
+	address common.Address
+	// 32字节长度的字节数组
 	addrHash common.Hash // hash of ethereum address of the account
-	data     types.StateAccount
-	db       *StateDB
+	// 该数据由结构体定义{nonce, balance, root(存储树的根哈希), codeHash(byte切片，记录了代码信息)}
+	// 后边两个变量对于EOA来说是空值，root记录的是合约中storage变量，codeHash记录的是合约中的代码
+	data types.StateAccount
+	// ？
+	db *StateDB
 
 	// DB error.
 	// State objects are used by the consensus core and VM which are
 	// unable to deal with database-level errors. Any error that occurs
 	// during a database read is memoized here and will eventually be returned
 	// by StateDB.Commit.
+	// 数据库级别的错误，共识模块和vm无法处理的数据库级别的错误，会记录在该变量中，通过StateDB.Commit返回错误信息
 	dbErr error
 
+	// 下边的变量基本都用于内存
 	// Write caches.
+	// 用于保存和管理合约账户中的持久化变量存储的数据
 	trie Trie // storage trie, which becomes non-nil on first access
+	// 用于缓存合约中的代码段到内存，byte切片
 	code Code // contract bytecode, which gets set when code is loaded
 
 	originStorage  Storage // Storage cache of original entries to dedup rewrites, reset for every transaction

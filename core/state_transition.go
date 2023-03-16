@@ -64,6 +64,7 @@ func (result *ExecutionResult) Revert() []byte {
 }
 
 // IntrinsicGas computes the 'intrinsic gas' for a message with the given data.
+// 计算固有gas成本，创建合约起步价5.3w，交易2.1w
 func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation bool, isHomestead, isEIP2028 bool, isEIP3860 bool) (uint64, error) {
 	// Set the starting gas for the raw transaction
 	var gas uint64
@@ -83,6 +84,7 @@ func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation b
 			}
 		}
 		// Make sure we don't exceed uint64 for all data combinations
+		// 0字节4gas，非0字节68gas
 		nonZeroGas := params.TxDataNonZeroGasFrontier
 		if isEIP2028 {
 			nonZeroGas = params.TxDataNonZeroGasEIP2028
@@ -172,7 +174,9 @@ func TransactionToMessage(tx *types.Transaction, s types.Signer, baseFee *big.In
 // the gas used (which includes gas refunds) and an error if it failed. An error always
 // indicates a core error meaning that the message would always fail for that particular
 // state and would never be accepted within a block.
+// 通过给定的msg计算新的state，这里抛出的error代表了core的错误，意味着在特定的state下，该消息一直会出错，并且不被区块接受
 func ApplyMessage(evm *vm.EVM, msg *Message, gp *GasPool) (*ExecutionResult, error) {
+	// 这里的NewStateTransition会返回一个StateTransition的地址
 	return NewStateTransition(evm, msg, gp).TransitionDb()
 }
 
@@ -197,10 +201,19 @@ func ApplyMessage(evm *vm.EVM, msg *Message, gp *GasPool) (*ExecutionResult, err
 // == end ==
 //
 //  5. Run Script section
-//  6. Derive new state root
+//  6. Derive new state root、
+
+// 状态转换模型
+// 1、处理nonce
+// 2、提前支付gas
+// 3、如果接收者为空，创建一个新的state对象
+// 4、transfer the value,如果是创建合约，尝试运行交易的data，如果有效，将结果作为新的state对象的代码
+// 5、运行脚本
+// 6、到处新的state的root
+
 type StateTransition struct {
-	gp           *GasPool
-	msg          *Message
+	gp           *GasPool // 追踪区块内的gas使用情况
+	msg          *Message // msg call
 	gasRemaining uint64
 	initialGas   uint64
 	state        vm.StateDB
@@ -308,6 +321,9 @@ func (st *StateTransition) preCheck() error {
 //
 // However if any consensus issue encountered, return the error directly with
 // nil evm execution result.
+// 该函数，将应用当前msg改变state，并返回evm执行后的结果(used gas包含返还的gas，returndata 从evm返回的数据，
+// concrete execution error具体的执行错误：ErrOutOfGas, ErrExecutionReverted)
+// 如果遇到共识问题，直接返回错误 evm执行结果为空
 func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// First check this message satisfies all consensus rules before
 	// applying the message. The rules include these clauses
@@ -320,6 +336,15 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// 6. caller has enough balance to cover asset transfer for **topmost** call
 
 	// Check clauses 1-3, buy gas if everything is correct
+	// 应用msg之前，会检查一些共识问题
+	// 1、检查nonce是否正确
+	// 2、检查是否有足够的余额支付交易费用gaslimit * gasprice
+	// 3、区块中还有足够的gas
+	// 4、购买的gas足够覆盖该交易的固定gas
+	// 5、计算固定gas的时候没有发生溢出
+	// 6、caller有足够的余额支付transfer
+
+	// 1-3没问题就会直接购买gas
 	if err := st.preCheck(); err != nil {
 		return nil, err
 	}
@@ -339,21 +364,26 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	)
 
 	// Check clauses 4-5, subtract intrinsic gas if everything is correct
+
+	// 检查4-5，如果有效，就减去gas
 	gas, err := IntrinsicGas(msg.Data, msg.AccessList, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
 	if err != nil {
 		return nil, err
 	}
+	// 如果区块剩余的gas不够gas了，就返回错误
 	if st.gasRemaining < gas {
 		return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gasRemaining, gas)
 	}
 	st.gasRemaining -= gas
 
 	// Check clause 6
+	// 检查caller发送的value的余额是否足以支付本次交易
 	if msg.Value.Sign() > 0 && !st.evm.Context.CanTransfer(st.state, msg.From, msg.Value) {
 		return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From.Hex())
 	}
 
 	// Check whether the init code size has been exceeded.
+	// 检查是否超过初始化代码大小，这里的MaxInitCodeSize是MaxCodeSize的两倍（猜测：可能是为了满足部分合约会在constructor中执行复杂逻辑）
 	if rules.IsShanghai && contractCreation && len(msg.Data) > params.MaxInitCodeSize {
 		return nil, fmt.Errorf("%w: code size %v limit %v", ErrMaxInitCodeSizeExceeded, len(msg.Data), params.MaxInitCodeSize)
 	}
@@ -361,16 +391,21 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// Execute the preparatory steps for state transition which includes:
 	// - prepare accessList(post-berlin)
 	// - reset transient storage(eip 1153)
+	// 为执行状态转换做准备
+	// - 准备访问列表
+	// - 重置临时存储
 	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
 
 	var (
 		ret   []byte
 		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
 	)
+	// 分为创建合约和普通调用
 	if contractCreation {
 		ret, _, st.gasRemaining, vmerr = st.evm.Create(sender, msg.Data, st.gasRemaining, msg.Value)
 	} else {
 		// Increment the nonce for the next transaction
+		// 将账户的nonce+1
 		st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
 		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, msg.Value)
 	}
